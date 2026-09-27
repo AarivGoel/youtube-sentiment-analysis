@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YouTube Comment Sentiment Analyzer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<style>
+  :root {
+    --ink:#0B1120; --panel:#141C30; --panel-2:#1B2540; --line:#29354F;
+    --text:#E7ECF6; --muted:#8A93A8; --green:#34D399; --blue:#60A5FA; --red:#F87171; --amber:#FBBF24;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--ink); color:var(--text); font-family:'Space Grotesk',sans-serif; line-height:1.5; }
+  .wrap { max-width: 780px; margin:0 auto; padding: 3rem 1.5rem 4rem; }
+  h1 { font-size: clamp(1.6rem,4vw,2.2rem); margin:0 0 .3rem; }
+  .lede { color:var(--muted); margin:0 0 2rem; }
+
+  .search-row { display:flex; gap:.6rem; margin-bottom:2rem; }
+  input { flex:1; background:var(--panel); border:1px solid var(--line); color:var(--text);
+    padding:.8rem 1rem; border-radius:8px; font-family:inherit; font-size:.95rem; }
+  button { background:var(--green); color:var(--ink); border:none; padding:.8rem 1.4rem;
+    border-radius:8px; font-weight:700; cursor:pointer; font-family:inherit; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+
+  .error { color:var(--red); margin-bottom:1rem; display:none; }
+
+  .summary { display:none; background:var(--panel); border:1px solid var(--line); border-radius:14px;
+    padding:1.4rem; margin-bottom:2rem; }
+  .summary-grid { display:flex; gap:1.5rem; align-items:center; flex-wrap:wrap; }
+  .chart-box { width:160px; height:160px; flex:none; }
+  .stat-list { flex:1; min-width:180px; }
+  .stat-row { display:flex; justify-content:space-between; padding:.4rem 0; font-size:.9rem; border-top:1px solid var(--line); }
+  .stat-row:first-child { border-top:none; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:.5rem; }
+
+  .comments { display:none; }
+  .comment-card { background:var(--panel); border:1px solid var(--line); border-left:4px solid var(--muted);
+    border-radius:10px; padding:.9rem 1.1rem; margin-bottom:.6rem; }
+  .comment-card.positive { border-left-color: var(--green); }
+  .comment-card.negative { border-left-color: var(--red); }
+  .comment-card.neutral { border-left-color: var(--amber); }
+  .comment-top { display:flex; justify-content:space-between; font-size:.8rem; color:var(--muted); margin-bottom:.4rem; }
+  .badge { font-size:.72rem; padding:.15rem .5rem; border-radius:20px; text-transform:capitalize; }
+  .badge.positive { background:rgba(52,211,153,.15); color:var(--green); }
+  .badge.negative { background:rgba(248,113,113,.15); color:var(--red); }
+  .badge.neutral { background:rgba(251,191,36,.15); color:var(--amber); }
+
+  .loading { display:none; color:var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>YouTube Comment Sentiment Analyzer</h1>
+  <p class="lede">Paste a video link — every comment gets classified positive, negative, or neutral in real time.</p>
+
+  <div class="search-row">
+    <input id="videoUrl" placeholder="https://youtube.com/watch?v=..." />
+    <button id="analyzeBtn">Analyze</button>
+  </div>
+
+  <p class="error" id="errorBox"></p>
+  <p class="loading" id="loadingBox">Fetching comments and running the model...</p>
+
+  <div class="summary" id="summaryBox">
+    <div class="summary-grid">
+      <div class="chart-box"><canvas id="pieChart"></canvas></div>
+      <div class="stat-list" id="statList"></div>
+    </div>
+  </div>
+
+  <div class="comments" id="commentsBox"></div>
+</div>
+
+<script>
+let chartInstance = null;
+
+document.getElementById('analyzeBtn').addEventListener('click', analyze);
+document.getElementById('videoUrl').addEventListener('keydown', e => { if (e.key === 'Enter') analyze(); });
+
+async function analyze() {
+  const url = document.getElementById('videoUrl').value.trim();
+  const errorBox = document.getElementById('errorBox');
+  const loadingBox = document.getElementById('loadingBox');
+  const summaryBox = document.getElementById('summaryBox');
+  const commentsBox = document.getElementById('commentsBox');
+
+  errorBox.style.display = 'none';
+  summaryBox.style.display = 'none';
+  commentsBox.style.display = 'none';
+
+  if (!url) { errorBox.textContent = 'Please paste a video URL first.'; errorBox.style.display = 'block'; return; }
+
+  loadingBox.style.display = 'block';
+  document.getElementById('analyzeBtn').disabled = true;
+
+  try {
+    const res = await fetch('/api/analyze', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({video_url: url})
+    });
+    const data = await res.json();
+
+    if (!res.ok) throw new Error(data.error || 'Something went wrong.');
+
+    renderSummary(data.summary);
+    renderComments(data.comments);
+    summaryBox.style.display = 'block';
+    commentsBox.style.display = 'block';
+  } catch (err) {
+    errorBox.textContent = err.message;
+    errorBox.style.display = 'block';
+  } finally {
+    loadingBox.style.display = 'none';
+    document.getElementById('analyzeBtn').disabled = false;
+  }
+}
+
+function renderSummary(s) {
+  const ctx = document.getElementById('pieChart').getContext('2d');
+  if (chartInstance) chartInstance.destroy();
+  chartInstance = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: ['Positive', 'Negative', 'Neutral'],
+      datasets: [{
+        data: [s.positive, s.negative, s.neutral],
+        backgroundColor: ['#34D399', '#F87171', '#FBBF24'],
+        borderWidth: 0
+      }]
+    },
+    options: { plugins: { legend: { display: false } }, cutout: '65%' }
+  });
+
+  document.getElementById('statList').innerHTML = `
+    <div class="stat-row"><span><span class="dot" style="background:#34D399"></span>Positive</span><span>${s.positive} (${s.positive_pct}%)</span></div>
+    <div class="stat-row"><span><span class="dot" style="background:#F87171"></span>Negative</span><span>${s.negative} (${s.negative_pct}%)</span></div>
+    <div class="stat-row"><span><span class="dot" style="background:#FBBF24"></span>Neutral</span><span>${s.neutral} (${s.neutral_pct}%)</span></div>
+    <div class="stat-row"><span>Total analyzed</span><span>${s.total}</span></div>
+  `;
+}
+
+function renderComments(comments) {
+  const box = document.getElementById('commentsBox');
+  box.innerHTML = comments.map(c => `
+    <div class="comment-card ${c.sentiment}">
+      <div class="comment-top">
+        <span>${c.author}</span>
+        <span class="badge ${c.sentiment}">${c.sentiment} · ${c.confidence}%</span>
+      </div>
+      <div>${c.text}</div>
+    </div>
+  `).join('');
+}
+</script>
+</body>
+</html>
